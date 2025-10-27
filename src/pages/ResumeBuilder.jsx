@@ -1,4 +1,5 @@
-import React, { useEffect, useState, useRef, use } from 'react';
+// src/pages/ResumeBuilder.jsx
+import React, { useEffect, useState, useRef } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   ArrowLeftIcon,
@@ -84,7 +85,7 @@ const ResumeBuilder = () => {
   const loadExistingResume = async () => {
     try {
       const { data } = await api.get('/api/resumes/get/' + resumeId, { headers: { Authorization: token } });
-      if (data.resume) {
+      if (data?.resume) {
         setResumeData(data.resume);
       }
     } catch (error) {
@@ -97,28 +98,27 @@ const ResumeBuilder = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // New: GET /api/ai/resume-status/:resumeId -> refresh minimal status or full resume
-  // Returns server data so caller avoids relying on stale local state
-  
+  // GET /api/ai/resume-status/:resumeId -> refresh minimal status or full resume
   const checkResumeStatus = async () => {
-    console.log('checkResumeStatus -> token:', token, 'resumeId:', resumeId);
     try {
       const { data } = await api.get(`/api/ai/resume-status/${resumeId}`, {
         headers: { Authorization: token }
       });
 
       if (!data) return null;
-      console.log('checkResumeStatus response:', data.analysis_purchased);
 
       // If server returned full resume, sync and return it
-      if (data.analysis_purchased) {
-        console.log('checkResumeStatus: received full resume from server, updating local state.data.resume',data.analysis_purchased);
-        setResumeData(data.resume);
-        setStatusVersion(v => v + 1); // force any dependent logic to re-evaluate
+      if (data.resume?.analysis_purchased || data.analysis_purchased) {
+        if (data.resume) {
+          setResumeData(data.resume);
+        } else if (typeof data.analysis_purchased === 'boolean') {
+          setResumeData(prev => ({ ...prev, analysis_purchased: data.analysis_purchased }));
+        }
+        setStatusVersion(v => v + 1);
         return data;
       }
 
-      // Otherwise update just the flag if present and return the minimal payload
+      // Otherwise update just the flag if present and return minimal payload
       if (typeof data.analysis_purchased === 'boolean') {
         setResumeData(prev => ({ ...prev, analysis_purchased: data.analysis_purchased }));
         setStatusVersion(v => v + 1);
@@ -130,7 +130,13 @@ const ResumeBuilder = () => {
       return null;
     }
   };
-  useEffect(() => {checkResumeStatus}, []);
+
+  // run checkResumeStatus on mount (correct call)
+  useEffect(() => {
+    checkResumeStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const changeResumeVisibility = async () => {
     try {
       const formData = new FormData();
@@ -196,22 +202,18 @@ const ResumeBuilder = () => {
     });
   };
 
-  // Purchase flow: create order, open Razorpay, verify on server, THEN update UI using server-returned resume or check endpoint
+  // ---- UPDATED handlePurchase: after successful verify -> refresh & reload ----
   const handlePurchase = async () => {
     try {
-      console.log('handlePurchase -> token:', token, 'resumeId:', resumeData._id);
-
       await loadRazorpayScript();
 
       const { data: order } = await api.post('/api/ai/create-order',
         {
           resumeId: resumeData._id,
-          amount: 10000 // paise (₹100)
+          amount: 900 // paise (₹9)
         },
         { headers: { Authorization: token } }
       );
-
-      console.log('create-order response:', order);
 
       if (!order || !order.id) {
         alert('Server returned invalid order. Check console/network and server logs.');
@@ -219,18 +221,15 @@ const ResumeBuilder = () => {
       }
 
       const options = {
-        key: 'rzp_test_RWZN7PonJx0Zl4',
+        key: 'rzp_live_pUY8rDZAjalo1v',//'rzp_test_RWZN7PonJx0Zl4',
         amount: order.amount,
         currency: order.currency || 'INR',
-        name: 'Your App Name',
+        name: 'Resume99',
         description: 'Payment for Resume Analysis',
         order_id: order.id,
 
-        // Handler runs after user completes payment on client
         handler: async function (response) {
           try {
-            console.log('Razorpay widget success response:', response);
-
             const verifyPayload = {
               razorpay_order_id: response.razorpay_order_id,
               razorpay_payment_id: response.razorpay_payment_id,
@@ -244,29 +243,35 @@ const ResumeBuilder = () => {
               headers: { Authorization: token }
             });
 
-            console.log('verify-payment response:', verifyResp.data);
-
-            // Prefer using server-returned resume to update UI
+            // If server returns the updated resume, use it and reload page
             if (verifyResp?.data?.resume) {
               setResumeData(verifyResp.data.resume);
               setStatusVersion(v => v + 1);
-              alert(verifyResp.data.message || 'Payment verified and resume unlocked.');
-            } else if (verifyResp?.data?.message) {
-              // fallback: poll/check status endpoint to get authoritative result
+              setTimeout(() => window.location.reload(), 400);
+              return;
+            }
+
+            // If verify returned a message but not the resume, try to refresh status & resume then reload
+            if (verifyResp?.data?.message) {
               const status = await checkResumeStatus();
-              // Use returned status to decide
               const purchased = status?.resume?.analysis_purchased ?? status?.analysis_purchased ?? false;
               if (purchased) {
-                alert(verifyResp.data.message || 'Payment verified and resume unlocked.');
+                await loadExistingResume();
+                window.location.reload();
+                return;
               } else {
                 console.warn('verify returned success but server did not mark resume as purchased. Verify server logs.');
-                alert('Payment succeeded but server did not mark resume as purchased. Check server logs.');
+                alert('Payment succeeded but server did not mark resume as purchased. Reloading to refresh state.');
+                await loadExistingResume();
+                window.location.reload();
+                return;
               }
-            } else {
-              console.warn('Unexpected verify response:', verifyResp);
-              await checkResumeStatus();
-              alert('Payment processed — refreshed resume from server, check status.');
             }
+
+            // Fallback: if nothing useful returned, refresh status and reload
+            await checkResumeStatus();
+            await loadExistingResume();
+            window.location.reload();
 
           } catch (err) {
             console.error('verify-payment error:', err?.response || err);
@@ -304,7 +309,7 @@ const ResumeBuilder = () => {
   };
 
   // Analyze resume (calls backend analyze-resume and shows modal)
-  // Now ensures we use the authoritative server response returned by checkResumeStatus()
+  // Now ensures we parse analysis.details into analysis.feedback so UI renders correctly
   const handleAnalyzeResume = async () => {
     if (!resumeData?._id) {
       alert('Resume ID missing. Save the resume first.');
@@ -332,7 +337,23 @@ const ResumeBuilder = () => {
         return;
       }
 
-      setAnalysisResult(data.analysis);
+      // Normalize analysis.details -> feedback (server sometimes returns details as JSON string)
+      let analysis = data.analysis;
+      try {
+        if (analysis.details) {
+          if (typeof analysis.details === 'string') {
+            const parsed = JSON.parse(analysis.details);
+            analysis = { ...analysis, feedback: parsed };
+          } else if (typeof analysis.details === 'object') {
+            analysis = { ...analysis, feedback: analysis.details };
+          }
+        }
+      } catch (parseErr) {
+        console.error('Failed to parse analysis.details:', parseErr, analysis.details);
+        analysis = { ...analysis, feedback: { overall: String(analysis.details || '') } };
+      }
+
+      setAnalysisResult(analysis);
       setShowAnalysisModal(true);
     } catch (err) {
       console.error('analyze-resume error:', err.response || err);
@@ -412,9 +433,9 @@ const ResumeBuilder = () => {
                     {analysisLoading ? 'Analyzing...' : 'Analyze Resume'}
                   </button>
                 ) : (
-                  <>//handlePurchase checkResumeStatus
+                  <>
                     <button onClick={handlePurchase} className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-green-500 rounded-lg shadow-md hover:bg-green-600 transition-all">
-                      Purchase Analysis for ₹100
+                      Purchase Analysis for ₹9
                     </button>
                     <button disabled className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-gray-400 bg-gray-200 rounded-lg cursor-not-allowed">
                       <Sparkles className="size-4" />
@@ -502,7 +523,7 @@ const ResumeBuilder = () => {
                         </button>
                         <button
                           onClick={() => {
-                            // optional: keep analysisResult in resumeData if you want to persist locally
+                            // persist analysisResult into resumeData (optional)
                             setResumeData(prev => ({ ...prev, analysisResult }));
                             setShowAnalysisModal(false);
                           }}
