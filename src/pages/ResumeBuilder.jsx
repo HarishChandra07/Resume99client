@@ -221,7 +221,7 @@ const ResumeBuilder = () => {
       }
 
       const options = {
-        key: 'rzp_live_pUY8rDZAjalo1v',//'rzp_test_RWZN7PonJx0Zl4',
+        key: 'rzp_live_pUY8rDZAjalo1v',//'rzp_test_RWZN7PonJx0Zl4',rzp_live_pUY8rDZAjalo1v
         amount: order.amount,
         currency: order.currency || 'INR',
         name: 'Resume99',
